@@ -11,7 +11,10 @@ struct Command {
   int (*fn)(PulseClient&, int, char*[]);
   Range<int> args;
 };
-
+enum UnitType {
+  UNITTYPE_PA_PERCENT,
+  UNITTYPE_DB
+};
 struct Color {
   Color() {
     if (isatty(fileno(stdout))) {
@@ -98,6 +101,19 @@ static enum DeviceType string_to_devtype_or_die(const char* str) {
     return typemap.at(str);
   } catch(std::out_of_range) {
     errx(1, "error: Invalid device type specified: %s", str);
+  }
+}
+
+static enum UnitType string_to_unittype_or_die(const char* str) {
+  static std::map<string, enum UnitType> typemap{
+    { "%",           UNITTYPE_PA_PERCENT          },
+    { "percent",           UNITTYPE_PA_PERCENT          },
+    { "db",         UNITTYPE_DB        },
+  };
+  try {
+    return typemap.at(str);
+  } catch(std::out_of_range) {
+    errx(1, "error: Invalid unit type specified: %s", str);
   }
 }
 
@@ -294,28 +310,46 @@ static int AdjBalance(PulseClient& ponymix, int, char* argv[]) {
 
 static int adj_volume(PulseClient& ponymix,
                       bool (PulseClient::*adjust)(Device&, long int),
+                      int argc,
                       char* argv[]) {
   auto device = string_to_device_or_die(ponymix, opt_device, opt_devtype);
-
+  
   long delta;
+  enum UnitType unit;
+  if(argc == 4) {
+    //Set User's Unit
+    unit = string_to_unittype_or_die(argv[1]);
+  } else {
+    // Default to Pulse Audio Percent Unit
+    unit = UNITTYPE_PA_PERCENT;
+  }
   try {
     delta = std::stol(argv[0]);
   } catch (std::invalid_argument) {
     errx(1, "error: failed to convert string to integer: %s", argv[0]);
   }
-
+  // Perform Unit Specific Conversions
+  double volume_db;
+  switch (unit) {
+    case UNITTYPE_DB:
+      volume_db = pa_sw_volume_to_DB(device->Volume());
+      delta = pa_sw_volume_from_DB(volume_db + delta) - device->Volume();
+      break;
+    default:
+      break;
+  };
   // Allow setting the volume over 100, but don't "clip" the level back down to
   // 100 on adjustment.
   ponymix.SetVolumeRange(0, std::max(device->Volume(), static_cast<int>(opt_maxvolume)));
   return !(ponymix.*adjust)(*device, delta);
 }
 
-static int IncreaseVolume(PulseClient& ponymix, int, char* argv[]) {
-  return adj_volume(ponymix, &PulseClient::IncreaseVolume, argv);
+static int IncreaseVolume(PulseClient& ponymix, int argc, char* argv[]) {
+  return adj_volume(ponymix, &PulseClient::IncreaseVolume, argc, argv);
 }
 
-static int DecreaseVolume(PulseClient& ponymix, int, char* argv[]) {
-  return adj_volume(ponymix, &PulseClient::DecreaseVolume, argv);
+static int DecreaseVolume(PulseClient& ponymix, int argc, char* argv[]) {
+  return adj_volume(ponymix, &PulseClient::DecreaseVolume, argc, argv);
 }
 
 static int Mute(PulseClient& ponymix, int, char*[]) {
@@ -425,8 +459,8 @@ static const std::pair<const string, const Command>& string_to_command(
     { "get-balance",         { GetBalance,          { 0, 0 } } },
     { "set-balance",         { SetBalance,          { 1, 1 } } },
     { "adj-balance",         { AdjBalance,          { 1, 1 } } },
-    { "increase",            { IncreaseVolume,      { 1, 1 } } },
-    { "decrease",            { DecreaseVolume,      { 1, 1 } } },
+    { "increase",            { IncreaseVolume,      { 1, 2 } } },
+    { "decrease",            { DecreaseVolume,      { 1, 2 } } },
     { "mute",                { Mute,                { 0, 0 } } },
     { "unmute",              { Unmute,              { 0, 0 } } },
     { "toggle",              { ToggleMute,          { 0, 0 } } },
